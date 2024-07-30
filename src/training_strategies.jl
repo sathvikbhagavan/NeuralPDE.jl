@@ -70,7 +70,7 @@ function merge_strategy_with_loss_function(pinnrep::PINNRepresentation,
     pde_loss_functions = [get_loss_function(_loss, _set, eltypeθ, strategy)
                           for (_loss, _set) in zip(datafree_pde_loss_function,
         pde_train_sets)]
-
+    Main.datafree_pde_loss_function = datafree_pde_loss_function
     bc_loss_functions = [get_loss_function(_loss, _set, eltypeθ, strategy)
                          for (_loss, _set) in zip(datafree_bc_loss_function, bcs_train_sets)]
 

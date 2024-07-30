@@ -20,11 +20,14 @@ dottable_(x) = Broadcast.dottable(x)
 dottable_(x::Function) = true
 dottable_(x::typeof(numeric_derivative)) = false
 dottable_(x::Phi) = false
+dottable_(x::typeof(stateless_apply)) = false
+dottable_(x::typeof(getindex)) = false
+dottable_(x::typeof(convert)) = false
 
 _dot_(x) = x
 function _dot_(x::Expr)
     dotargs = Base.mapany(_dot_, x.args)
-    nodot = [:phi, Symbol("NeuralPDE.numeric_derivative"), NeuralPDE.rvcat]
+    nodot = []
     if x.head === :call && dottable_(x.args[1]) && all(s -> x.args[1] != s, nodot)
         Expr(:., dotargs[1], Expr(:tuple, dotargs[2:end]...))
     elseif x.head === :comparison
@@ -239,3 +242,26 @@ function get_number(eqs, v::VariableMap)
 end
 
 sym_op(u) = Symbol(operation(u))
+
+ex = postwalk(ex) do x
+    if @capture(x, gg_(xs__))
+        if gg in keys(dict_depvars)
+            if xs == indvars
+                return :($(Symbol(:phi, :_, gg))($(Symbol(:coord, :_, gg)), $(Symbol(:θ, :_, gg))))
+            elseif hasproperty(xs[1], :head) && xs[1].head === :call
+                return :($(Symbol(:phi, :_, gg))($(xs...), $(Symbol(:θ, :_, gg))))
+            else
+                cs = map(xs) do i
+                    i isa Symbol ? i : :(zero(view(coord, [1], :)) .+ $i)
+                end
+                return :($(Symbol(:phi, :_, gg))(vcat($(cs...)), $(Symbol(:θ, :_, gg))))
+            end
+        elseif gg===:derivative
+            return:($gg($(xs...)))
+        else
+            return :($gg.($(xs...)))
+        end
+    else
+        return x
+    end
+end

@@ -16,6 +16,148 @@ callback = function (p, l)
     return false
 end
 
+## MWE:
+@parameters θ
+@variables u(..)
+Dθ = Differential(θ)
+
+# 1D ODE
+eq = Dθ(u(θ)) ~ θ^3 + 2 * θ + (θ^2) * ((1 + 3 * (θ^2)) / (1 + θ + (θ^3))) -
+                u(θ) * (θ + ((1 + 3 * (θ^2)) / (1 + θ + θ^3)))
+
+# Initial and boundary conditions
+bcs = [u(0.0) ~ 1.0]
+
+# Space and time domains
+domains = [θ ∈ Interval(0.0, 1.0)]
+
+# Neural network
+chain = Lux.Chain(Lux.Dense(1, 12, Lux.σ), Lux.Dense(12, 1))
+
+discretization = NeuralPDE.PhysicsInformedNN(chain, GridTraining(0.1))
+
+@named pdesys = PDESystem(eq, bcs, domains, [θ], [u(θ)])
+prob = NeuralPDE.discretize(pdesys, discretization)
+prob.f.f(prob.u0, nothing) # Calculate loss
+
+###
+import Lux, ComponentArrays
+using Adapt
+using SciMLBase: parameterless_type
+
+using Symbolics, Random
+using Symbolics: unwrap
+using RuntimeGeneratedFunctions
+using ModelingToolkit
+using SymbolicUtils.Code
+using ModelingToolkit: toexpr
+RuntimeGeneratedFunctions.init(@__MODULE__)
+
+# Seeding
+rng = Random.default_rng()
+Random.seed!(rng, 0)
+
+mutable struct Phi{C, S}
+    f::C
+    st::S
+    function Phi(chain::Lux.AbstractExplicitLayer)
+        st = Lux.initialstates(Random.default_rng(), chain)
+        new{typeof(chain), typeof(st)}(chain, st)
+    end
+end
+
+function (f::Phi{<:Lux.AbstractExplicitLayer})(x::AbstractArray, θ)
+    @show x, typeof(x)
+    y = LuxCore.stateless_apply(f.f, reshape(x, 1, size(x)...), θ)
+    # y, st = f.f(x, θ, f.st)
+    y
+end
+
+@register_array_symbolic (f::Phi{<:Lux.AbstractExplicitLayer})(
+    x::AbstractArray, ps::Union{NamedTuple, <:AbstractVector}) begin
+    size = LuxCore.outputsize(f.f, x, LuxCore._default_rng())
+    eltype = Real
+end
+
+@parameters theta
+@variables u(..) phi(..)
+@parameters x[1:2]
+# 1D ODE
+# eq =  (phi([unwrap(x +  1.0)], theta) - phi([unwrap(x)], theta))/x
+eq = (phi(x[1] + 1.0, theta) - phi(x[2], theta))
+
+# Neural network
+chain = Lux.Chain(Lux.Dense(1, 12, Lux.σ), Lux.Dense(12, 1))
+p = Phi(chain)
+
+coords = Symbolics.DestructuredArgs(x)
+
+ex = Func([x, phi, theta], [], eq) |> toexpr
+
+@show ex
+
+f = @RuntimeGeneratedFunction ex
+
+ps, st = Lux.setup(Random.default_rng(), chain)
+ps = ComponentArray(ps)
+
+# @parameters theta[1:length(ps)] = Vector(ps)
+
+f([[0.0], [0.1]], p, ps)
+f([0.1, 0.2], p, ps)
+
+### MWE
+
+using ModelingToolkit, Symbolics
+using Symbolics: unwrap
+using Lux
+using Random
+
+rng = Random.default_rng()
+Random.seed!(rng, 0)
+
+@parameters x, y, z
+@variables u(..), v(..), h(..), p(..)
+Dz = Differential(z)
+expr1 = u(x, y, z) + v(x, y) - h(x) - x - y - z ~ 0
+
+chain_u = Lux.Chain(Lux.Dense(3, 12, Lux.tanh), Lux.Dense(12, 12, Lux.tanh),
+                    Lux.Dense(12, 1))
+ps, st = Lux.setup(rng, chain_u)
+dvs = unwrap.([u(x, y, z), v(x, y), h(x)])
+phi_symbols = Symbol.("phi_" .* string.(operation.(dvs)))
+theta_symbols = Symbol.("theta_" .* string.(operation.(dvs)))
+
+dvs_phi_map = Dict(map(
+    i -> operation(dvs[i]) => let phi = phi_symbols[i]
+        first(@variables $phi(..))
+        end, 1:length(dvs)
+))
+
+dvs_theta_map = Dict(map(
+    i -> operation(dvs[i]) => let theta = theta_symbols[i]
+        first(@variables $theta)
+        end, 1:length(dvs)
+))
+rule = [u => dvs_phi_map[operation(u)](arguments(u), dvs_theta_map[operation(u)]) for (i, u) in enumerate(dvs)]
+
+expr2 = substitute(expr1.lhs, rule)
+
+## goal - 
+x = args"1"[1]
+y = args"1"[2]
+z = args"1"[3]
+phi_u = args"2"[1]
+phi_v = args"2"[2]
+phi_h = args"2"[3]
+theta_u = args"3"[1]
+theta_v = args"3"[2]
+theta_h = args"3"[3]
+phi_u([x, y, z], theta_u) + phi_v([x, y], theta_v) - phi_h([x], theta_h) - x - y - z
+
+build_function(expr2, [x, y, z], collect(values(dvs_phi_map)), collect(values(dvs_theta_map)))
+
+
 function test_ode(strategy_)
     println("Example 1, 1D ode: strategy: $(nameof(typeof(strategy_)))")
     @parameters θ
@@ -90,8 +232,8 @@ end
         v(y, x) ~ x^2 + y^2,
         h(z) ~ cos(z),
         p(x, z) ~ exp(x) * exp(z),
-        u(x, y, z) + v(y, x) * Dz(h(z)) - p(x, z) ~ x + y + z - (x^2 + y^2) * sin(z) -
-                                                    exp(x) * exp(z)
+        # u(x, y, z) + v(y, x) * Dz(h(z)) - p(x, z) ~ x + y + z - (x^2 + y^2) * sin(z) -
+        #                                             exp(x) * exp(z)
     ]
 
     bcs = [u(0, 0, 0) ~ 0.0]
@@ -110,17 +252,17 @@ end
         Lux.Chain(Lux.Dense(2, 12, Lux.tanh), Lux.Dense(12, 12, Lux.tanh),
             Lux.Dense(12, 1))]
 
-    grid_strategy = NeuralPDE.GridTraining(0.1)
+    strategy = NeuralPDE.GridTraining(0.1)
     quadrature_strategy = NeuralPDE.QuadratureTraining(quadrature_alg = CubatureJLh(),
         reltol = 1e-3, abstol = 1e-3,
         maxiters = 50, batch = 100)
 
-    discretization = NeuralPDE.PhysicsInformedNN(chain, grid_strategy)
+    discretization = NeuralPDE.PhysicsInformedNN(chain, strategy)
 
-    @named pde_system = PDESystem(eqs, bcs, domains, [x, y, z],
+    @named pdesys = PDESystem(eqs, bcs, domains, [x, y, z],
         [u(x, y, z), v(y, x), h(z), p(x, z)])
 
-    prob = NeuralPDE.discretize(pde_system, discretization)
+    prob = NeuralPDE.discretize(pdesys, discretization)
 
     callback = function (p, l)
         println("Current loss is: $l")
