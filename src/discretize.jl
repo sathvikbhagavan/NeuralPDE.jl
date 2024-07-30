@@ -166,6 +166,14 @@ function lazyconvert(T, x::Symbolics.Arr)
     Symbolics.array_term(convert, T, x, size = size(x))
 end
 
+function make_parameters(sym, array_length)
+    ModelingToolkit.toparam((Symbolics.wrap)((SymbolicUtils.setmetadata)((SymbolicUtils.setmetadata)((Sym){Array{Real, (length)((1:array_length,))}}(sym), Symbolics.ArrayShapeCtx, (1:array_length,)), Symbolics.VariableSource, (:parameters, sym))))
+end
+
+function make_type_parameters(sym, default_value)
+    ModelingToolkit.toparam((Symbolics.wrap)((Symbolics.set_scalar_metadata)((SymbolicUtils.setmetadata)((Symbolics.setdefaultval)((Sym){typeof(typeof(default_value))}(sym), typeof(default_value)), Symbolics.VariableSource, (:parameters, sym)), ModelingToolkit.VariableTunable, false)))
+end
+
 """
     prob = symbolic_discretize(pde_system::PDESystem, discretization::AbstractPINN)
 
@@ -235,8 +243,10 @@ function SciMLBase.symbolic_discretize(pdesys::PDESystem,
         chain_params_symbols = map(chain_names) do chain_name
             _params = getproperty(init_params, chain_name)
             [
-                first(@parameters Symbol("pss_" * string(chain_name))[1:length(_params)]),
-                first(@parameters Symbol("T_" * string(chain_name))::typeof(typeof(_params))=typeof(_params) [tunable = false])
+                # first(@parameters Symbol("pss_" * string(chain_name))[1:length(_params)]),
+                make_parameters(Symbol("pss_" * string(chain_name)), length(_params)),
+                # first(@parameters Symbol("T_" * string(chain_name))::typeof(typeof(_params))=typeof(_params) [tunable = false])
+                make_type_parameters(Symbol("T_" * string(chain_name)), _params)
             ]
         end
         outs = []
@@ -245,6 +255,9 @@ function SciMLBase.symbolic_discretize(pdesys::PDESystem,
                 lazyconvert(chain_params_symbols[i][2], chain_params_symbols[i][1]))[1]
             push!(outs, out)
         end
+        params_outs_map = Dict(
+            operation.(unwrap.(pdesys.dvs)) .=> chain_params_symbols
+        )
     else
         chain_params_symbols = [
             first(@parameters pss[1:length(init_params)]),
@@ -256,6 +269,7 @@ function SciMLBase.symbolic_discretize(pdesys::PDESystem,
                 phi.f, x, lazyconvert(chain_params_symbols[2], chain_params_symbols[1]))[i]
             push!(outs, out)
         end
+        params_outs_map = chain_params_symbols[1]
     end
 
     depvars_outs_map = Dict(
@@ -310,8 +324,8 @@ function SciMLBase.symbolic_discretize(pdesys::PDESystem,
     pinnrep = PINNRepresentation(eqs, bcs, domains, eq_params, defaults, default_p,
         param_estim, additional_loss, adaloss, varmap, logger,
         multioutput, iteration, init_params, flat_init_params, phi,
-        derivative, depvars_outs_map,
-        strategy, eqdata, nothing, nothing, nothing, nothing)
+        derivative, depvars_outs_map, params_outs_map,
+        strategy, eqdata, nothing, nothing, nothing, nothing, pdesys.dvs)
 
     #integral = get_numeric_integral(pinnrep)
 
